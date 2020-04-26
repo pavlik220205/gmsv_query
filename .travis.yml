@@ -39,8 +39,8 @@ script: "$BUILD_SCRIPT"
 deploy:
   skip_cleanup: true
   provider: releases
-  api_key: f012d1d249dd17e1cfded7f6645bab3f809579c1 
-  github_token: f012d1d249dd17e1cfded7f6645bab3f809579c1 
+  api_key:  $GITHUB_TOKEN 
+  github_token: $GITHUB_TOKEN 
   file: "${TRAVIS_BUILD_DIR}/projects/${PROJECT_OS}/${COMPILER_PLATFORM}/release/gmsv_${MODULE_NAME}_${TARGET_OS}.dll"
   on:
     repo: pavlik220205/gmsv_query
