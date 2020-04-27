@@ -19,8 +19,9 @@
 #include <utlvector.h>
 #include <bitbuf.h>
 #include <steam/steam_gameserver.h>
-#include <symbolfinder.hpp>
 #include <game/server/iplayerinfo.h>
+#include <scanning/symbolfinder.hpp>
+#include <Platform.hpp>
 
 #if defined _WIN32
 
@@ -178,56 +179,54 @@ namespace netfilter
 	typedef CUtlVector<netsocket_t> netsockets_t;
 
 #if defined SYSTEM_WINDOWS
-	static const char SteamGameServerAPIContext_sym[] = "\x2A\x2A\x2A\x2A\xE8\x2A\x2A\x2A\x2A\x6A\x00\x68\x2A\x2A\x2A\x2A\xFF\x55\x08\x83\xC4\x08\xA3";
-	static const size_t SteamGameServerAPIContext_symlen = sizeof(SteamGameServerAPIContext_sym) - 1;
-		
-	static const char FileSystemFactory_sym[] = "\x55\x8B\xEC\x68\x2A\x2A\x2A\x2A\xFF\x75\x08\xE8";
-	static const size_t FileSystemFactory_symlen = sizeof(FileSystemFactory_sym) - 1;
 
-	static const char g_pFullFileSystem_sym[] = "@g_pFullFileSystem";
-	static const size_t g_pFullFileSystem_symlen = 0;
+	static const std::vector<Symbol> FileSystemFactory_syms = {
+		Symbol::FromName( "?FileSystemFactory@@YAPEAXPEBDPEAH@Z" ),
+		Symbol::FromSignature( "\x55\x8B\xEC\x68\x2A\x2A\x2A\x2A\xFF\x75\x08\xE8" )
+	};
 
-	static const char net_sockets_sig[] = "\x2A\x2A\x2A\x2A\x80\x7E\x04\x00\x0F\x84\x2A\x2A\x2A\x2A\xA1\x2A\x2A\x2A\x2A\xC7\x45\xF8\x10";
-	static size_t net_sockets_siglen = sizeof(net_sockets_sig) - 1;
+	static const Symbol g_pFullFileSystem_sym = Symbol::FromName( "g_pFullFileSystem" );
 
-	static const char IServer_sig[] = "\x2A\x2A\x2A\x2A\xE8\x2A\x2A\x2A\x2A\xD8\x6D\x24\x83\x4D\xEC\x10";
-	static const size_t IServer_siglen = sizeof(IServer_sig) - 1;
+	static const std::string GetNetSocket_sym = "?GMOD_GetNetSocket@@YAPEAUnetsocket_t@@H@Z";
+	static const Symbol net_sockets_sym = Symbol::FromSignature(
+		"\x2A\x2A\x2A\x2A\x56\x57\x8B\x7D\x08\x8B\xF7\x03\xF6\x8B\x44\xF3\x0C\x85\xC0\x74\x0A\x57\x50" );
 
-	static const char operating_system_char = 'w';
+	static constexpr char operating_system_char = 'w';
 
 #elif defined SYSTEM_POSIX
-	static const char SteamGameServerAPIContext_sym[] = "@_ZL27s_SteamGameServerAPIContext";
-	static const size_t SteamGameServerAPIContext_symlen = 0;
 
-	static const char FileSystemFactory_sym[] = "@_Z17FileSystemFactoryPKcPi";
-	static const size_t FileSystemFactory_symlen = 0;
+	static const std::vector<Symbol> FileSystemFactory_syms = { Symbol::FromName( "_Z17FileSystemFactoryPKcPi" ) };
 
-	static const char g_pFullFileSystem_sym[] = "@g_pFullFileSystem";
-	static const size_t g_pFullFileSystem_symlen = 0;
+	static const Symbol g_pFullFileSystem_sym = Symbol::FromName( "g_pFullFileSystem" );
 
-	static const char net_sockets_sig[] = "@_ZL11net_sockets";
-	static const size_t net_sockets_siglen = 0;
-
-	static const char IServer_sig[] = "@sv";
-	static const size_t IServer_siglen = sizeof(IServer_sig) - 1;
-#endif
+	static const std::string GetNetSocket_sym = "_Z17GMOD_GetNetSocketi";
+	static const Symbol net_sockets_sym = Symbol::FromName( "_ZL11net_sockets" );
 
 #if defined SYSTEM_LINUX
-	static const char operating_system_char = 'l';
+
+	static constexpr char operating_system_char = 'l';
+
 #elif defined SYSTEM_MACOSX
-	static const char operating_system_char = 'm';
+
+	static constexpr char operating_system_char = 'm';
+
 #endif
 
-	static std::string dedicated_binary = Helpers::GetBinaryFileName("dedicated", false, true, "bin/");
-	static SourceSDK::FactoryLoader server_loader("server", false, true, "garrysmod/bin/");
-	
-	static std::string server_binary = Helpers::GetBinaryFileName( "server", false, true, "garrysmod/bin/" );
-	static CSteamGameServerAPIContext *gameserver_context = nullptr;
+#endif
 
+
+
+	static SourceSDK::ModuleLoader dedicated_loader( "dedicated" );
+	static SourceSDK::FactoryLoader server_loader( "server" );
+
+	static CSteamGameServerAPIContext gameserver_context;
+	static bool gameserver_context_initialized = false;
+
+	
 	static Hook_recvfrom_t Hook_recvfrom = VCRHook_recvfrom;
 	static int32_t game_socket = -1;
 
-	static const char *default_game_version = "18.12.05"; // 16.12.01
+	static const char *default_game_version = "2019.11.12"; // 16.12.01
 	static const uint8_t default_proto_version = 17;
 	static bool info_cache_enabled = true;
 	static reply_info_t reply_info;
@@ -240,7 +239,6 @@ namespace netfilter
 	static char player_cache_buffer[1024] = { 0 };
 	static bf_write player_cache_packet(player_cache_buffer, sizeof(player_cache_buffer));
 
-	static IServer *server = nullptr;
 	static IPlayerInfoManager *playerinfo = nullptr;
 	static CGlobalVars *globalvars = nullptr;
 	static IServerGameDLL *gamedll = nullptr;
@@ -262,8 +260,8 @@ namespace netfilter
 				reply_info.game_dir.erase(0, pos + 1);
 		}
 
-		reply_info.max_clients = server->GetMaxClients();
-		reply_info.udp_port = server->GetUDPPort();
+		reply_info.max_clients = global::server->GetMaxClients();
+		reply_info.udp_port = global::server->GetUDPPort();
 
 		{
 			const IGamemodeSystem::Information &gamemode =
@@ -311,19 +309,28 @@ namespace netfilter
 
 	static void UpdateReplyInfo()
 	{
-		reply_info.game_name = server->GetName();
-		reply_info.map_name = server->GetMapName();
+		reply_info.game_name = global::server->GetName();
+		reply_info.map_name = global::server->GetMapName();
 		reply_info.gamemode_name = gamedll->GetGameDescription();
-		reply_info.appid = engine_server->GetAppID();
-		reply_info.amt_clients = server->GetNumClients();
-		reply_info.amt_bots = server->GetNumFakeClients();
-		reply_info.passworded = server->GetPassword() != nullptr ? 1 : 0;
+		reply_info.appid = engine_global::server->GetAppID();
+		reply_info.amt_clients = global::server->GetNumClients();
+		reply_info.amt_bots = global::server->GetNumFakeClients();
+		reply_info.passworded = global::server->GetPassword() != nullptr ? 1 : 0;
 		
-		ISteamGameServer *steamGS = gameserver_context != nullptr ?
-			gameserver_context->m_pSteamGameServer : nullptr;
-		reply_info.secure = steamGS != nullptr ? steamGS->BSecure() : false;
+		if( !gameserver_context_initialized )
+			gameserver_context_initialized = gameserver_context.Init( );
 
-		const CSteamID *sid = engine_server->GetGameServerSteamID();
+
+
+		bool reply_info.secure = false;
+		if( gameserver_context_initialized )
+		{
+			ISteamGameServer *steamGS = gameserver_context.SteamGameServer( );
+			if( steamGS != nullptr )
+				reply_info.secure = steamGS->BSecure( );
+		}
+
+		const CSteamID *sid = engine_global::server->GetGameServerSteamID();
 		if (sid != nullptr)
 			reply_info.steamid = sid->ConvertToUint64();
 	}
@@ -820,14 +827,17 @@ namespace netfilter
 	{
 		lua = static_cast<GarrysMod::Lua::ILuaInterface *>(LUA);
 
-		if (!server_loader.IsValid())
-			LUA->ThrowError("unable to get server factory");
+		if( !server_loader.IsValid( ) )
+			LUA->ThrowError( "unable to get server factory" );
 
-		gamedll = server_loader.GetInterface<IServerGameDLL>(INTERFACEVERSION_SERVERGAMEDLL);
+
+		gamedll = server_loader.GetInterface<IServerGameDLL>( INTERFACEVERSION_SERVERGAMEDLL );
 		if (gamedll == nullptr)
 			LUA->ThrowError("failed to load required IServerGameDLL interface");
 
-		engine_server = global::engine_loader.GetInterface<IVEngineServer>(INTERFACEVERSION_VENGINESERVER);
+		engine_server = global::engine_loader.GetInterface<IVEngineServer>(
+			INTERFACEVERSION_VENGINESERVER
+		);
 		if (engine_server == nullptr)
 			LUA->ThrowError("failed to load required IVEngineServer interface");
 
@@ -839,97 +849,93 @@ namespace netfilter
 		if (globalvars == nullptr)
 			LUA->ThrowError("failed to load required CGlobalVars interface");
 
+		{
 		SymbolFinder symfinder;
 
-		CreateInterfaceFn factory = reinterpret_cast<CreateInterfaceFn>(symfinder.ResolveOnBinary(
-			dedicated_binary.c_str(), FileSystemFactory_sym, FileSystemFactory_symlen
-		));
-		if (factory == nullptr)
-		{
-			IFileSystem **filesystem_ptr = reinterpret_cast<IFileSystem **>(symfinder.ResolveOnBinary(
-				dedicated_binary.c_str(), g_pFullFileSystem_sym, g_pFullFileSystem_symlen
-				));
-			if( filesystem_ptr == nullptr )
-				filesystem_ptr = reinterpret_cast<IFileSystem **>(symfinder.ResolveOnBinary(
-					server_binary.c_str(), g_pFullFileSystem_sym, g_pFullFileSystem_symlen
-				));
-			
-			if( filesystem_ptr != nullptr )
-				filesystem = *filesystem_ptr;
-		}
-		else
-		{
-			filesystem = static_cast<IFileSystem *>(factory(FILESYSTEM_INTERFACE_VERSION, nullptr));
-		}
+		CreateInterfaceFn factory = nullptr;
+
+		for( const auto &symbol : FileSystemFactory_syms )
+			{
+				factory = reinterpret_cast<CreateInterfaceFn>( symfinder.Resolve(
+					dedicated_loader.GetModule( ),
+					symbol.name.c_str( ),
+					symbol.length
+				) );
+				if( factory != nullptr )
+					break;
+			}
+
+		if( factory == nullptr )
+			{
+				IFileSystem **filesystem_ptr =
+					reinterpret_cast<IFileSystem **>( symfinder.Resolve(
+						dedicated_loader.GetModule( ),
+						g_pFullFileSystem_sym.name.c_str( ),
+						g_pFullFileSystem_sym.length
+					) );
+				if( filesystem_ptr == nullptr )
+					filesystem_ptr =
+					reinterpret_cast<IFileSystem **>( symfinder.Resolve(
+						server_loader.GetModule( ),
+						g_pFullFileSystem_sym.name.c_str( ),
+						g_pFullFileSystem_sym.length
+					) );
+
+				if( filesystem_ptr != nullptr )
+					filesystem = *filesystem_ptr;
+			}
+			else
+			{
+				filesystem =
+					static_cast<IFileSystem *>( factory( FILESYSTEM_INTERFACE_VERSION, nullptr ) );
+			}
 
 		if (filesystem == nullptr)
 			LUA->ThrowError("failed to initialize IFileSystem");
 		
-#if defined SYSTEM_WINDOWS
-			CSteamGameServerAPIContext **gameserver_context_pointer = reinterpret_cast<CSteamGameServerAPIContext **>(symfinder.ResolveOnBinary(
-				server_binary.c_str(),
-				SteamGameServerAPIContext_sym,
-				SteamGameServerAPIContext_symlen
-			));
-			
-			if(gameserver_context_pointer == nullptr)
-				LUA->ThrowError("Failed to load required CSteamGameServerAPIContext interface pointer.");
 
-			gameserver_context = *gameserver_context_pointer;
-#else
-			gameserver_context = reinterpret_cast<CSteamGameServerAPIContext *>(symfinder.ResolveOnBinary(
-				server_binary.c_str(),
-				SteamGameServerAPIContext_sym,
-				SteamGameServerAPIContext_symlen
-			));
-#endif
 
-		if(gameserver_context == nullptr)
-			LUA->ThrowError("Failed to load required CSteamGameServerAPIContext interface.");
 
-#if defined SYSTEM_POSIX
+		auto GetNetSocket = reinterpret_cast<GetNetSocket_t>(
+						global::engine_loader.GetSymbol( GetNetSocket_sym )
+					);
 
-		server = reinterpret_cast<IServer *>(symfinder.ResolveOnBinary(
-			global::engine_lib.c_str(),
-			IServer_sig,
-			IServer_siglen
-		));
+		if( GetNetSocket != nullptr )
+					{
+						netsocket_t *socket = GetNetSocket( 1 );
+						if( socket != nullptr )
+							game_socket = socket->hUDP;
+					}
 
-#else
 
-		server = *reinterpret_cast<IServer **>(symfinder.ResolveOnBinary(
-			global::engine_lib.c_str(),
-			IServer_sig,
-			IServer_siglen
-		));
-
-#endif
-
-		if (server == nullptr)
-			LUA->ThrowError("failed to locate IServer");
+			if( game_socket == INVALID_SOCKET )
+			{
+				void *temp_net_sockets = reinterpret_cast<CSteamGameServerAPIContext *>( symfinder.Resolve(
+					global::engine_loader.GetModule( ),
+					net_sockets_sym.name.c_str( ),
+					net_sockets_sym.length
+				) );
+				if( temp_net_sockets != nullptr )
+				{
+					netsockets_t *net_sockets =
 
 #if defined SYSTEM_POSIX
 
-		netsockets_t *net_sockets = reinterpret_cast<netsockets_t *>(symfinder.ResolveOnBinary(
-			global::engine_lib.c_str(),
-			net_sockets_sig,
-			net_sockets_siglen
-		));
+						reinterpret_cast<netsockets_t *>
 
 #else
 
-		netsockets_t *net_sockets = *reinterpret_cast<netsockets_t **>(symfinder.ResolveOnBinary(
-			global::engine_lib.c_str(),
-			net_sockets_sig,
-			net_sockets_siglen
-		));
+						*reinterpret_cast<netsockets_t **>
 
 #endif
 
-		if (net_sockets == nullptr)
-			LUA->ThrowError("got an invalid pointer to net_sockets");
+						( temp_net_sockets );
+					if( net_sockets != nullptr )
+						game_socket = net_sockets->Element( 1 ).hUDP;
+				}
+			}
+		}
 
-		game_socket = net_sockets->Element(1).hUDP;
 		if (game_socket == -1)
 			LUA->ThrowError("got an invalid server socket");
 
